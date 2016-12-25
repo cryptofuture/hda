@@ -1,4 +1,4 @@
-// Copyright (c) 2014 The Bitcoin Core developers
+// Copyright (c) 2014-2015 The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -59,7 +59,7 @@ BOOST_AUTO_TEST_CASE(subsidy_limit_test)
         nSum += nSubsidy;
         BOOST_CHECK(MoneyRange(nSum));
     }
-    BOOST_CHECK_EQUAL(nSum, 12500000000000ULL);
+    BOOST_CHECK_EQUAL(nSum, 1250000000ULL);
     // Remainder of first period
     for (int nHeight = consensusParams.nSubsidySlowStartInterval; nHeight < consensusParams.nSubsidyHalvingInterval + consensusParams.SubsidySlowStartShift(); nHeight ++) {
         CAmount nSubsidy = GetBlockSubsidy(nHeight, consensusParams);

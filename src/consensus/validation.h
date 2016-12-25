@@ -1,5 +1,5 @@
 // Copyright (c) 2009-2010 Satoshi Nakamoto
-// Copyright (c) 2009-2014 The Bitcoin Core developers
+// Copyright (c) 2009-2015 The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -22,22 +22,25 @@ static const unsigned char REJECT_CHECKPOINT = 0x43;
 class CValidationState {
 private:
     enum mode_state {
-        MODE_VALID,   //! everything ok
-        MODE_INVALID, //! network rule violation (DoS value may be set)
-        MODE_ERROR,   //! run-time error
+        MODE_VALID,   //!< everything ok
+        MODE_INVALID, //!< network rule violation (DoS value may be set)
+        MODE_ERROR,   //!< run-time error
     } mode;
     int nDoS;
     std::string strRejectReason;
-    unsigned char chRejectCode;
+    unsigned int chRejectCode;
     bool corruptionPossible;
+    std::string strDebugMessage;
 public:
     CValidationState() : mode(MODE_VALID), nDoS(0), chRejectCode(0), corruptionPossible(false) {}
     virtual bool DoS(int level, bool ret = false,
-             unsigned char chRejectCodeIn=0, std::string strRejectReasonIn="",
-             bool corruptionIn=false) {
+             unsigned int chRejectCodeIn=0, const std::string &strRejectReasonIn="",
+             bool corruptionIn=false,
+             const std::string &strDebugMessageIn="") {
         chRejectCode = chRejectCodeIn;
         strRejectReason = strRejectReasonIn;
         corruptionPossible = corruptionIn;
+        strDebugMessage = strDebugMessageIn;
         if (mode == MODE_ERROR)
             return ret;
         nDoS += level;
@@ -45,10 +48,11 @@ public:
         return ret;
     }
     virtual bool Invalid(bool ret = false,
-                 unsigned char _chRejectCode=0, std::string _strRejectReason="") {
-        return DoS(0, ret, _chRejectCode, _strRejectReason);
+                 unsigned int _chRejectCode=0, const std::string &_strRejectReason="",
+                 const std::string &_strDebugMessage="") {
+        return DoS(0, ret, _chRejectCode, _strRejectReason, false, _strDebugMessage);
     }
-    virtual bool Error(std::string strRejectReasonIn="") {
+    virtual bool Error(const std::string& strRejectReasonIn) {
         if (mode == MODE_VALID)
             strRejectReason = strRejectReasonIn;
         mode = MODE_ERROR;
@@ -73,8 +77,12 @@ public:
     virtual bool CorruptionPossible() const {
         return corruptionPossible;
     }
-    virtual unsigned char GetRejectCode() const { return chRejectCode; }
+    virtual void SetCorruptionPossible() {
+        corruptionPossible = true;
+    }
+    virtual unsigned int GetRejectCode() const { return chRejectCode; }
     virtual std::string GetRejectReason() const { return strRejectReason; }
+    virtual std::string GetDebugMessage() const { return strDebugMessage; }
 };
 
 #endif // BITCOIN_CONSENSUS_VALIDATION_H

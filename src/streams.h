@@ -1,5 +1,5 @@
 // Copyright (c) 2009-2010 Satoshi Nakamoto
-// Copyright (c) 2009-2013 The Bitcoin Core developers
+// Copyright (c) 2009-2015 The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -21,6 +21,39 @@
 #include <string.h>
 #include <utility>
 #include <vector>
+
+template<typename Stream>
+class OverrideStream
+{
+    Stream* stream;
+public:
+    const int nType;
+    const int nVersion;
+
+    OverrideStream(Stream* stream_, int nType_, int nVersion_) : stream(stream_), nType(nType_), nVersion(nVersion_) {}
+
+    template<typename T>
+    OverrideStream<Stream>& operator<<(const T& obj)
+    {
+        // Serialize to this stream
+        ::Serialize(*this->stream, obj, nType, nVersion);
+        return (*this);
+    }
+
+    template<typename T>
+    OverrideStream<Stream>& operator>>(T& obj)
+    {
+        // Unserialize from this stream
+        ::Unserialize(*this->stream, obj, nType, nVersion);
+        return (*this);
+    }
+};
+
+template<typename S>
+OverrideStream<S> WithOrVersion(S* s, int nVersionFlag)
+{
+    return OverrideStream<S>(s, s->GetType(), s->GetVersion() | nVersionFlag);
+}
 
 /** Double ended buffer combining vector and stream-like interfaces.
  *
@@ -349,8 +382,8 @@ private:
 
     int nType;
     int nVersion;
-	
-    FILE* file;	
+
+    FILE* file;
 
 public:
     CAutoFile(FILE* filenew, int nTypeIn, int nVersionIn)

@@ -1,19 +1,21 @@
-#!/usr/bin/env python2
-# Copyright (c) 2014 The Bitcoin Core developers
+#!/usr/bin/env python3
+# Copyright (c) 2014-2016 The Bitcoin Core developers
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #
-# Test proper accounting with malleable transactions
+# Test proper accounting with a double-spend conflict
 #
 
 from test_framework.test_framework import BitcoinTestFramework
 from test_framework.util import *
-from decimal import Decimal
-import os
-import shutil
 
 class TxnMallTest(BitcoinTestFramework):
+
+    def __init__(self):
+        super().__init__()
+        self.num_nodes = 4
+        self.setup_clean_chain = False
 
     def add_options(self, parser):
         parser.add_option("--mineblock", dest="mine_block", default=False, action="store_true",
@@ -26,11 +28,10 @@ class TxnMallTest(BitcoinTestFramework):
     def run_test(self):
         mining_reward = 10
         starting_balance = mining_reward * 25
-
         for i in range(4):
             assert_equal(self.nodes[i].getbalance(), starting_balance)
             self.nodes[i].getnewaddress("")  # bug workaround, coins generated assigned to first getnewaddress!
-
+            
         # Coins are sent to node1_address
         node1_address = self.nodes[1].getnewaddress("")
 
@@ -105,3 +106,5 @@ class TxnMallTest(BitcoinTestFramework):
 
 if __name__ == '__main__':
     TxnMallTest().main()
+
+

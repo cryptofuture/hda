@@ -11,8 +11,8 @@
 
 #include <stdint.h>
 #include <assert.h>
-
 #include "sodium.h"
+
 #include "compat/endian.h"
 
 #if defined(NDEBUG)

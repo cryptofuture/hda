@@ -7,7 +7,6 @@
 #include "tinyformat.h"
 
 #include <string>
-
 #include <boost/preprocessor/arithmetic/add.hpp>
 #include <boost/preprocessor/arithmetic/sub.hpp>
 #include <boost/preprocessor/comparison/equal.hpp>
@@ -19,7 +18,7 @@
  * for both bitcoind and bitcoin-core, to make it harder for attackers to
  * target servers or GUI users specifically.
  */
-const std::string CLIENT_NAME("MagicBean");
+const std::string CLIENT_NAME("HDA");
 
 /**
  * Client version number
@@ -48,7 +47,8 @@ const std::string CLIENT_NAME("MagicBean");
 #include "build.h"
 #endif
 
-//! git will put "#define GIT_ARCHIVE 1" on the next line inside archives. $Format:%n#define GIT_ARCHIVE 1$
+//! git will put "#define GIT_ARCHIVE 1" on the next line inside archives. 
+#define GIT_ARCHIVE 1
 #ifdef GIT_ARCHIVE
 #define GIT_COMMIT_ID "$Format:%h$"
 #define GIT_COMMIT_DATE "$Format:%cD$"
@@ -71,13 +71,13 @@ const std::string CLIENT_NAME("MagicBean");
                 RENDER_DEV_STRING(BOOST_PP_SUB(build, 50)))))
 
 #define BUILD_DESC_WITH_SUFFIX(maj, min, rev, build, suffix) \
-    "v" DO_STRINGIZE(maj) "." DO_STRINGIZE(min) "." DO_STRINGIZE(rev) RENDER_BUILD(build) "-" DO_STRINGIZE(suffix)
+    "v" DO_STRINGIZE(maj) "." DO_STRINGIZE(min) "." DO_STRINGIZE(rev) "." RENDER_BUILD(build) "-" DO_STRINGIZE(suffix)
 
 #define BUILD_DESC_FROM_COMMIT(maj, min, rev, build, commit) \
-    "v" DO_STRINGIZE(maj) "." DO_STRINGIZE(min) "." DO_STRINGIZE(rev) RENDER_BUILD(build) "-g" commit
+    "v" DO_STRINGIZE(maj) "." DO_STRINGIZE(min) "." DO_STRINGIZE(rev) "." RENDER_BUILD(build) "-g" commit
 
 #define BUILD_DESC_FROM_UNKNOWN(maj, min, rev, build) \
-    "v" DO_STRINGIZE(maj) "." DO_STRINGIZE(min) "." DO_STRINGIZE(rev) RENDER_BUILD(build) "-unk"
+    "v" DO_STRINGIZE(maj) "." DO_STRINGIZE(min) "." DO_STRINGIZE(rev) "." RENDER_BUILD(build) "-unk"
 
 #ifndef BUILD_DESC
 #ifdef BUILD_SUFFIX
@@ -89,16 +89,7 @@ const std::string CLIENT_NAME("MagicBean");
 #endif
 #endif
 
-#ifndef BUILD_DATE
-#ifdef GIT_COMMIT_DATE
-#define BUILD_DATE GIT_COMMIT_DATE
-#else
-#define BUILD_DATE __DATE__ ", " __TIME__
-#endif
-#endif
-
 const std::string CLIENT_BUILD(BUILD_DESC CLIENT_VERSION_SUFFIX);
-const std::string CLIENT_DATE(BUILD_DATE);
 
 static std::string FormatVersion(int nVersion)
 {

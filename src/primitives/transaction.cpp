@@ -1,5 +1,5 @@
 // Copyright (c) 2009-2010 Satoshi Nakamoto
-// Copyright (c) 2009-2014 The Bitcoin Core developers
+// Copyright (c) 2009-2015 The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -43,6 +43,7 @@ JSDescription::JSDescription(ZCJoinSplit& params,
 
 JSDescription JSDescription::Randomized(
             ZCJoinSplit& params,
+            libzcash::ProofVerifier& verifier,
             const uint256& pubKeyHash,
             const uint256& anchor,
             boost::array<libzcash::JSInput, ZC_NUM_JS_INPUTS>& inputs,
@@ -74,6 +75,7 @@ bool JSDescription::Verify(
 ) const {
     return params.verify(
         proof,
+        verifier,
         pubKeyHash,
         randomSeed,
         macs,
@@ -89,6 +91,7 @@ uint256 JSDescription::h_sig(ZCJoinSplit& params, const uint256& pubKeyHash) con
 {
     return params.h_sig(randomSeed, nullifiers, pubKeyHash);
 }
+
 
 std::string COutPoint::ToString() const
 {
@@ -117,8 +120,8 @@ std::string CTxIn::ToString() const
     if (prevout.IsNull())
         str += strprintf(", coinbase %s", HexStr(scriptSig));
     else
-        str += strprintf(", scriptSig=%s", scriptSig.ToString().substr(0,24));
-    if (nSequence != std::numeric_limits<unsigned int>::max())
+        str += strprintf(", scriptSig=%s", HexStr(scriptSig).substr(0, 24));
+    if (nSequence != SEQUENCE_FINAL)
         str += strprintf(", nSequence=%u", nSequence);
     str += ")";
     return str;
@@ -137,31 +140,31 @@ uint256 CTxOut::GetHash() const
 
 std::string CTxOut::ToString() const
 {
-    return strprintf("CTxOut(nValue=%d.%08d, scriptPubKey=%s)", nValue / COIN, nValue % COIN, scriptPubKey.ToString().substr(0,30));
+    return strprintf("CTxOut(nValue=%d.%08d, scriptPubKey=%s)", nValue / COIN, nValue % COIN, HexStr(scriptPubKey).substr(0, 30));
 }
 
 CMutableTransaction::CMutableTransaction() : nVersion(CTransaction::MIN_CURRENT_VERSION), nLockTime(0) {}
-CMutableTransaction::CMutableTransaction(const CTransaction& tx) : nVersion(tx.nVersion), vin(tx.vin), vout(tx.vout), nLockTime(tx.nLockTime),
-                                                                   vjoinsplit(tx.vjoinsplit), joinSplitPubKey(tx.joinSplitPubKey), joinSplitSig(tx.joinSplitSig)
-{
-    
-}
+CMutableTransaction::CMutableTransaction(const CTransaction& tx) : nVersion(tx.nVersion), vin(tx.vin), vout(tx.vout), wit(tx.wit), nLockTime(tx.nLockTime), vjoinsplit(tx.vjoinsplit), joinSplitPubKey(tx.joinSplitPubKey), joinSplitSig(tx.joinSplitSig) {}
 
 uint256 CMutableTransaction::GetHash() const
 {
-    return SerializeHash(*this);
+    return SerializeHash(*this, SER_GETHASH, SERIALIZE_TRANSACTION_NO_WITNESS);
 }
 
 void CTransaction::UpdateHash() const
 {
-    *const_cast<uint256*>(&hash) = SerializeHash(*this);
+    *const_cast<uint256*>(&hash) = SerializeHash(*this, SER_GETHASH, SERIALIZE_TRANSACTION_NO_WITNESS);
+}
+
+uint256 CTransaction::GetWitnessHash() const
+{
+    return SerializeHash(*this, SER_GETHASH, 0);
 }
 
 CTransaction::CTransaction() : nVersion(CTransaction::MIN_CURRENT_VERSION), vin(), vout(), nLockTime(0), vjoinsplit(), joinSplitPubKey(), joinSplitSig() { }
 
-CTransaction::CTransaction(const CMutableTransaction &tx) : nVersion(tx.nVersion), vin(tx.vin), vout(tx.vout), nLockTime(tx.nLockTime), vjoinsplit(tx.vjoinsplit),
-                                                            joinSplitPubKey(tx.joinSplitPubKey), joinSplitSig(tx.joinSplitSig)
-{
+CTransaction::CTransaction(const CMutableTransaction &tx) : nVersion(tx.nVersion), vin(tx.vin), vout(tx.vout), wit(tx.wit), nLockTime(tx.nLockTime), vjoinsplit(tx.vjoinsplit),
+                                                            joinSplitPubKey(tx.joinSplitPubKey), joinSplitSig(tx.joinSplitSig) {
     UpdateHash();
 }
 
@@ -169,6 +172,7 @@ CTransaction& CTransaction::operator=(const CTransaction &tx) {
     *const_cast<int*>(&nVersion) = tx.nVersion;
     *const_cast<std::vector<CTxIn>*>(&vin) = tx.vin;
     *const_cast<std::vector<CTxOut>*>(&vout) = tx.vout;
+    *const_cast<CTxWitness*>(&wit) = tx.wit;
     *const_cast<unsigned int*>(&nLockTime) = tx.nLockTime;
     *const_cast<std::vector<JSDescription>*>(&vjoinsplit) = tx.vjoinsplit;
     *const_cast<uint256*>(&joinSplitPubKey) = tx.joinSplitPubKey;
@@ -184,9 +188,9 @@ CAmount CTransaction::GetValueOut() const
     {
         nValueOut += it->nValue;
         if (!MoneyRange(it->nValue) || !MoneyRange(nValueOut))
-            throw std::runtime_error("CTransaction::GetValueOut(): value out of range");
+            throw std::runtime_error(std::string(__func__) + ": value out of range");
     }
-
+    
     for (std::vector<JSDescription>::const_iterator it(vjoinsplit.begin()); it != vjoinsplit.end(); ++it)
     {
         // NB: vpub_old "takes" money from the value pool just as outputs do
@@ -229,7 +233,7 @@ unsigned int CTransaction::CalculateModifiedSize(unsigned int nTxSize) const
     // Providing any more cleanup incentive than making additional inputs free would
     // risk encouraging people to create junk outputs to redeem later.
     if (nTxSize == 0)
-        nTxSize = ::GetSerializeSize(*this, SER_NETWORK, PROTOCOL_VERSION);
+        nTxSize = (GetTransactionWeight(*this) + WITNESS_SCALE_FACTOR - 1) / WITNESS_SCALE_FACTOR;
     for (std::vector<CTxIn>::const_iterator it(vin.begin()); it != vin.end(); ++it)
     {
         unsigned int offset = 41U + std::min(110U, (unsigned int)it->scriptSig.size());
@@ -250,7 +254,14 @@ std::string CTransaction::ToString() const
         nLockTime);
     for (unsigned int i = 0; i < vin.size(); i++)
         str += "    " + vin[i].ToString() + "\n";
+    for (unsigned int i = 0; i < wit.vtxinwit.size(); i++)
+        str += "    " + wit.vtxinwit[i].scriptWitness.ToString() + "\n";
     for (unsigned int i = 0; i < vout.size(); i++)
         str += "    " + vout[i].ToString() + "\n";
     return str;
+}
+
+int64_t GetTransactionWeight(const CTransaction& tx)
+{
+    return ::GetSerializeSize(tx, SER_NETWORK, PROTOCOL_VERSION | SERIALIZE_TRANSACTION_NO_WITNESS) * (WITNESS_SCALE_FACTOR -1) + ::GetSerializeSize(tx, SER_NETWORK, PROTOCOL_VERSION);
 }

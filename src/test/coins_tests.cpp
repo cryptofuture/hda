@@ -1,4 +1,4 @@
-// Copyright (c) 2014 The Bitcoin Core developers
+// Copyright (c) 2014-2015 The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -246,6 +246,81 @@ BOOST_AUTO_TEST_CASE(nullifier_regression_test)
 
         // The nullifier now should be `false`.
         BOOST_CHECK(!cache1.GetNullifier(nf));
+    }
+}
+
+BOOST_AUTO_TEST_CASE(anchor_pop_regression_test)
+{
+    // Correct behavior:
+    {
+        CCoinsViewTest base;
+        CCoinsViewCacheTest cache1(&base);
+
+        // Create dummy anchor/commitment
+        ZCIncrementalMerkleTree tree;
+        uint256 cm = GetRandHash();
+        tree.append(cm);
+
+        // Add the anchor
+        cache1.PushAnchor(tree);
+        cache1.Flush();
+
+        // Remove the anchor
+        cache1.PopAnchor(ZCIncrementalMerkleTree::empty_root());
+        cache1.Flush();
+
+        // Add the anchor back
+        cache1.PushAnchor(tree);
+        cache1.Flush();
+
+        // The base contains the anchor, of course!
+        {
+            ZCIncrementalMerkleTree checktree;
+            BOOST_CHECK(cache1.GetAnchorAt(tree.root(), checktree));
+            BOOST_CHECK(checktree.root() == tree.root());
+        }
+    }
+
+    // Previously incorrect behavior
+    {
+        CCoinsViewTest base;
+        CCoinsViewCacheTest cache1(&base);
+
+        // Create dummy anchor/commitment
+        ZCIncrementalMerkleTree tree;
+        uint256 cm = GetRandHash();
+        tree.append(cm);
+
+        // Add the anchor and flush to disk
+        cache1.PushAnchor(tree);
+        cache1.Flush();
+
+        // Remove the anchor, but don't flush yet!
+        cache1.PopAnchor(ZCIncrementalMerkleTree::empty_root());
+
+        {
+            CCoinsViewCacheTest cache2(&cache1); // Build cache on top
+            cache2.PushAnchor(tree); // Put the same anchor back!
+            cache2.Flush(); // Flush to cache1
+        }
+
+        // cache2's flush kinda worked, i.e. cache1 thinks the
+        // tree is there, but it didn't bring down the correct
+        // treestate...
+        {
+            ZCIncrementalMerkleTree checktree;
+            BOOST_CHECK(cache1.GetAnchorAt(tree.root(), checktree));
+            BOOST_CHECK(checktree.root() == tree.root()); // Oh, shucks.
+        }
+
+        // Flushing cache won't help either, just makes the inconsistency
+        // permanent.
+        cache1.Flush();
+        {
+            ZCIncrementalMerkleTree checktree;
+            BOOST_CHECK(cache1.GetAnchorAt(tree.root(), checktree));
+            BOOST_CHECK(checktree.root() == tree.root()); // Oh, shucks.
+        }
     }
 }
 
@@ -614,13 +689,22 @@ BOOST_AUTO_TEST_CASE(coins_cache_simulation_test)
         }
 
         if (insecure_rand() % 100 == 0) {
+            // Every 100 iterations, flush an intermediate cache
+            if (stack.size() > 1 && insecure_rand() % 2 == 0) {
+                unsigned int flushIndex = insecure_rand() % (stack.size() - 1);
+                stack[flushIndex]->Flush();
+            }
+        }
+        if (insecure_rand() % 100 == 0) {
             // Every 100 iterations, change the cache stack.
             if (stack.size() > 0 && insecure_rand() % 2 == 0) {
+                //Remove the top cache
                 stack.back()->Flush();
                 delete stack.back();
                 stack.pop_back();
             }
             if (stack.size() == 0 || (stack.size() < 4 && insecure_rand() % 2)) {
+                //Add a new cache
                 CCoinsView* tip = &base;
                 if (stack.size() > 0) {
                     tip = stack.back();
@@ -693,6 +777,15 @@ BOOST_AUTO_TEST_CASE(coins_coinbase_spends)
         BOOST_CHECK(!NonContextualCheckInputs(tx2, state, cache, false, SCRIPT_VERIFY_NONE, false, Params().GetConsensus()));
         BOOST_CHECK(state.GetRejectReason() == "bad-txns-coinbase-spend-has-transparent-outputs");
     }
+
+    // Clean up the stack.
+    while (stack.size() > 0) {
+        delete stack.back();
+        stack.pop_back();
+    }
+
+    // Verify coverage.
+    BOOST_CHECK(spent_a_duplicate_coinbase);
 }
 
 BOOST_AUTO_TEST_CASE(ccoins_serialization)

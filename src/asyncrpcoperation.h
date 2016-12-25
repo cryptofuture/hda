@@ -15,11 +15,7 @@
 #include <utility>
 #include <future>
 
-#include "json/json_spirit_value.h"
-#include "json/json_spirit_utils.h"
-#include "json/json_spirit_reader_template.h"
-#include "json/json_spirit_writer_template.h"
-
+/* Json_spirit changed to UniValue  */
 using namespace std;
 using namespace json_spirit;
 

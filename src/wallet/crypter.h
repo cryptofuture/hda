@@ -1,4 +1,4 @@
-// Copyright (c) 2009-2014 The Bitcoin Core developers
+// Copyright (c) 2009-2015 The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -15,6 +15,7 @@ class uint256;
 
 const unsigned int WALLET_CRYPTO_KEY_SIZE = 32;
 const unsigned int WALLET_CRYPTO_SALT_SIZE = 8;
+const unsigned int WALLET_CRYPTO_IV_SIZE = 16;
 
 /**
  * Private key encryption is done based on a CMasterKey,
@@ -83,15 +84,18 @@ public:
 /** Encryption/decryption context with key information */
 class CCrypter
 {
+friend class wallet_crypto::TestCrypter; // for test access to chKey/chIV
 private:
     unsigned char chKey[WALLET_CRYPTO_KEY_SIZE];
-    unsigned char chIV[WALLET_CRYPTO_KEY_SIZE];
+    unsigned char chIV[WALLET_CRYPTO_IV_SIZE];
     bool fKeySet;
+
+    int BytesToKeySHA512AES(const std::vector<unsigned char>& chSalt, const SecureString& strKeyData, int count, unsigned char *key,unsigned char *iv) const;
 
 public:
     bool SetKeyFromPassphrase(const SecureString &strKeyData, const std::vector<unsigned char>& chSalt, const unsigned int nRounds, const unsigned int nDerivationMethod);
-    bool Encrypt(const CKeyingMaterial& vchPlaintext, std::vector<unsigned char> &vchCiphertext);
-    bool Decrypt(const std::vector<unsigned char>& vchCiphertext, CKeyingMaterial& vchPlaintext);
+    bool Encrypt(const CKeyingMaterial& vchPlaintext, std::vector<unsigned char> &vchCiphertext) const;
+    bool Decrypt(const std::vector<unsigned char>& vchCiphertext, CKeyingMaterial& vchPlaintext) const;
     bool SetKey(const CKeyingMaterial& chNewKey, const std::vector<unsigned char>& chNewIV);
 
     void CleanKey()
@@ -132,7 +136,7 @@ private:
 
     CKeyingMaterial vMasterKey;
 
-    //! if fUseCrypto is true, mapKeys and mapSpendingKeys must be empty
+    //! if fUseCrypto is true, mapKeys must be empty
     //! if fUseCrypto is false, vMasterKey must be empty
     bool fUseCrypto;
 
@@ -207,7 +211,7 @@ public:
     bool HaveSpendingKey(const libzcash::PaymentAddress &address) const
     {
         {
-            LOCK(cs_KeyStore);
+            LOCK(cs_SpendingKeyStore);
             if (!IsCrypted())
                 return CBasicKeyStore::HaveSpendingKey(address);
             return mapCryptedSpendingKeys.count(address) > 0;

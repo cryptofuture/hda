@@ -1,4 +1,4 @@
-// Copyright (c) 2012-2013 The Bitcoin Core developers
+// Copyright (c) 2012-2015 The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -190,38 +190,37 @@ BOOST_AUTO_TEST_CASE(key_test1)
     BOOST_CHECK(detsig == ParseHex("1c52d8a32079c11e79db95af63bb9600c5b04f21a9ca33dc129c2bfa8ac9dc1cd561d8ae5e0f6c1a16bde3719c64c2fd70e404b6428ab9a69566962e8771b5944d"));
     BOOST_CHECK(detsigc == ParseHex("2052d8a32079c11e79db95af63bb9600c5b04f21a9ca33dc129c2bfa8ac9dc1cd561d8ae5e0f6c1a16bde3719c64c2fd70e404b6428ab9a69566962e8771b5944d"));
 }
+    BOOST_AUTO_TEST_CASE(zc_address_test)
+    {
+        for (size_t i = 0; i < 1000; i++) {
+            auto sk = SpendingKey::random();
+            {
+                CZCSpendingKey spendingkey(sk);
+                string sk_string = spendingkey.ToString();
 
-BOOST_AUTO_TEST_CASE(zc_address_test)
-{
-    for (size_t i = 0; i < 1000; i++) {
-        auto sk = SpendingKey::random();
-        {
-            CZCSpendingKey spendingkey(sk);
-            string sk_string = spendingkey.ToString();
+                BOOST_CHECK(sk_string[0] == 'S');
+                BOOST_CHECK(sk_string[1] == 'K');
 
-            BOOST_CHECK(sk_string[0] == 'S');
-            BOOST_CHECK(sk_string[1] == 'K');
+                CZCSpendingKey spendingkey2(sk_string);
+                SpendingKey sk2 = spendingkey2.Get();
+                BOOST_CHECK(sk.inner() == sk2.inner());
+            }
+            {
+                auto addr = sk.address();
 
-            CZCSpendingKey spendingkey2(sk_string);
-            SpendingKey sk2 = spendingkey2.Get();
-            BOOST_CHECK(sk.inner() == sk2.inner());
+                CZCPaymentAddress paymentaddr(addr);
+                string addr_string = paymentaddr.ToString();
+
+                BOOST_CHECK(addr_string[0] == 'z');
+                BOOST_CHECK(addr_string[1] == 'c');
+
+                CZCPaymentAddress paymentaddr2(addr_string);
+
+                PaymentAddress addr2 = paymentaddr2.Get();
+                BOOST_CHECK(addr.a_pk == addr2.a_pk);
+                BOOST_CHECK(addr.pk_enc == addr2.pk_enc);
+            }
         }
-        {
-            auto addr = sk.address();
-
-            CZCPaymentAddress paymentaddr(addr);
-            string addr_string = paymentaddr.ToString();
-
-            BOOST_CHECK(addr_string[0] == 'z');
-            BOOST_CHECK(addr_string[1] == 'c');
-
-            CZCPaymentAddress paymentaddr2(addr_string);
-
-            PaymentAddress addr2 = paymentaddr2.Get();
-            BOOST_CHECK(addr.a_pk == addr2.a_pk);
-            BOOST_CHECK(addr.pk_enc == addr2.pk_enc);
-        }
-    }
 }
 
 BOOST_AUTO_TEST_SUITE_END()

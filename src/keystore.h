@@ -1,5 +1,5 @@
 // Copyright (c) 2009-2010 Satoshi Nakamoto
-// Copyright (c) 2009-2014 The Bitcoin Core developers
+// Copyright (c) 2009-2015 The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -35,7 +35,7 @@ public:
     virtual bool HaveKey(const CKeyID &address) const =0;
     virtual bool GetKey(const CKeyID &address, CKey& keyOut) const =0;
     virtual void GetKeys(std::set<CKeyID> &setAddress) const =0;
-    virtual bool GetPubKey(const CKeyID &address, CPubKey& vchPubKeyOut) const;
+    virtual bool GetPubKey(const CKeyID &address, CPubKey& vchPubKeyOut) const =0;
 
     //! Support for BIP 0013 : see https://github.com/bitcoin/bips/blob/master/bip-0013.mediawiki
     virtual bool AddCScript(const CScript& redeemScript) =0;
@@ -58,6 +58,7 @@ public:
 };
 
 typedef std::map<CKeyID, CKey> KeyMap;
+typedef std::map<CKeyID, CPubKey> WatchKeyMap;
 typedef std::map<CScriptID, CScript > ScriptMap;
 typedef std::set<CScript> WatchOnlySet;
 typedef std::map<libzcash::PaymentAddress, libzcash::SpendingKey> SpendingKeyMap;
@@ -68,6 +69,7 @@ class CBasicKeyStore : public CKeyStore
 {
 protected:
     KeyMap mapKeys;
+    WatchKeyMap mapWatchKeys;
     ScriptMap mapScripts;
     WatchOnlySet setWatchOnly;
     SpendingKeyMap mapSpendingKeys;
@@ -75,6 +77,7 @@ protected:
 
 public:
     bool AddKeyPubKey(const CKey& key, const CPubKey &pubkey);
+    bool GetPubKey(const CKeyID &address, CPubKey& vchPubKeyOut) const;
     bool HaveKey(const CKeyID &address) const
     {
         bool result;
@@ -118,56 +121,55 @@ public:
     virtual bool RemoveWatchOnly(const CScript &dest);
     virtual bool HaveWatchOnly(const CScript &dest) const;
     virtual bool HaveWatchOnly() const;
-
     bool AddSpendingKey(const libzcash::SpendingKey &sk);
     bool HaveSpendingKey(const libzcash::PaymentAddress &address) const
     {
         bool result;
-        {
-            LOCK(cs_SpendingKeyStore);
-            result = (mapSpendingKeys.count(address) > 0);
-        }
-        return result;
-    }
-    bool GetSpendingKey(const libzcash::PaymentAddress &address, libzcash::SpendingKey &skOut) const
-    {
-        {
-            LOCK(cs_SpendingKeyStore);
-            SpendingKeyMap::const_iterator mi = mapSpendingKeys.find(address);
-            if (mi != mapSpendingKeys.end())
             {
-                skOut = mi->second;
-                return true;
+                LOCK(cs_SpendingKeyStore);
+                result = (mapSpendingKeys.count(address) > 0);
+            }
+            return result;
+     }
+        bool GetSpendingKey(const libzcash::PaymentAddress &address, libzcash::SpendingKey &skOut) const
+        {
+            {
+                LOCK(cs_SpendingKeyStore);
+                SpendingKeyMap::const_iterator mi = mapSpendingKeys.find(address);
+                if (mi != mapSpendingKeys.end())
+                {
+                    skOut = mi->second;
+                    return true;
+                }
+            }
+            return false;
+        }
+        bool GetNoteDecryptor(const libzcash::PaymentAddress &address, ZCNoteDecryption &decOut) const
+        {
+            {
+                LOCK(cs_SpendingKeyStore);
+                NoteDecryptorMap::const_iterator mi = mapNoteDecryptors.find(address);
+                if (mi != mapNoteDecryptors.end())
+                {
+                    decOut = mi->second;
+                    return true;
+                }
+            }
+            return false;
+        }
+        void GetPaymentAddresses(std::set<libzcash::PaymentAddress> &setAddress) const
+        {
+            setAddress.clear();
+            {
+                LOCK(cs_SpendingKeyStore);
+                SpendingKeyMap::const_iterator mi = mapSpendingKeys.begin();
+                while (mi != mapSpendingKeys.end())
+                {
+                    setAddress.insert((*mi).first);
+                    mi++;
+                }
             }
         }
-        return false;
-    }
-    bool GetNoteDecryptor(const libzcash::PaymentAddress &address, ZCNoteDecryption &decOut) const
-    {
-        {
-            LOCK(cs_SpendingKeyStore);
-            NoteDecryptorMap::const_iterator mi = mapNoteDecryptors.find(address);
-            if (mi != mapNoteDecryptors.end())
-            {
-                decOut = mi->second;
-                return true;
-            }
-        }
-        return false;
-    }
-    void GetPaymentAddresses(std::set<libzcash::PaymentAddress> &setAddress) const
-    {
-        setAddress.clear();
-        {
-            LOCK(cs_SpendingKeyStore);
-            SpendingKeyMap::const_iterator mi = mapSpendingKeys.begin();
-            while (mi != mapSpendingKeys.end())
-            {
-                setAddress.insert((*mi).first);
-                mi++;
-            }
-        }
-    }
 };
 
 typedef std::vector<unsigned char, secure_allocator<unsigned char> > CKeyingMaterial;

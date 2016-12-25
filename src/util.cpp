@@ -1,5 +1,5 @@
 // Copyright (c) 2009-2010 Satoshi Nakamoto
-// Copyright (c) 2009-2014 The Bitcoin Core developers
+// Copyright (c) 2009-2015 The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -99,6 +99,9 @@ namespace boost {
 
 using namespace std;
 
+const char * const BITCOIN_CONF_FILENAME = "bitcoin.conf";
+const char * const BITCOIN_PID_FILENAME = "bitcoind.pid";
+
 map<string, string> mapArgs;
 map<string, vector<string> > mapMultiArgs;
 bool fDebug = false;
@@ -176,23 +179,51 @@ instance_of_cinit;
  */
 
 static boost::once_flag debugPrintInitFlag = BOOST_ONCE_INIT;
+
 /**
- * We use boost::call_once() to make sure these are initialized
- * in a thread-safe manner the first time called:
+ * We use boost::call_once() to make sure mutexDebugLog and
+ * vMsgsBeforeOpenLog are initialized in a thread-safe manner.
+ *
+ * NOTE: fileout, mutexDebugLog and sometimes vMsgsBeforeOpenLog
+ * are leaked on exit. This is ugly, but will be cleaned up by
+ * the OS/libc. When the shutdown sequence is fully audited and
+ * tested, explicit destruction of these objects can be implemented.
  */
 static FILE* fileout = NULL;
 static boost::mutex* mutexDebugLog = NULL;
+static list<string> *vMsgsBeforeOpenLog;
+
+static int FileWriteStr(const std::string &str, FILE *fp)
+{
+    return fwrite(str.data(), 1, str.size(), fp);
+}
 
 static void DebugPrintInit()
 {
-    assert(fileout == NULL);
     assert(mutexDebugLog == NULL);
+    mutexDebugLog = new boost::mutex();
+    vMsgsBeforeOpenLog = new list<string>;
+}
 
+void OpenDebugLog()
+{
+    boost::call_once(&DebugPrintInit, debugPrintInitFlag);
+    boost::mutex::scoped_lock scoped_lock(*mutexDebugLog);
+
+    assert(fileout == NULL);
+    assert(vMsgsBeforeOpenLog);
     boost::filesystem::path pathDebug = GetDataDir() / "debug.log";
     fileout = fopen(pathDebug.string().c_str(), "a");
     if (fileout) setbuf(fileout, NULL); // unbuffered
 
-    mutexDebugLog = new boost::mutex();
+    // dump buffered messages from before we opened the log
+    while (!vMsgsBeforeOpenLog->empty()) {
+        FileWriteStr(vMsgsBeforeOpenLog->front(), fileout);
+        vMsgsBeforeOpenLog->pop_front();
+    }
+
+    delete vMsgsBeforeOpenLog;
+    vMsgsBeforeOpenLog = NULL;
 }
 
 bool LogAcceptCategory(const char* category)
@@ -224,59 +255,90 @@ bool LogAcceptCategory(const char* category)
     return true;
 }
 
+/**
+ * fStartedNewLine is a state variable held by the calling context that will
+ * suppress printing of the timestamp when multiple calls are made that don't
+ * end in a newline. Initialize it to true, and hold it, in the calling context.
+ */
+static std::string LogTimestampStr(const std::string &str, bool *fStartedNewLine)
+{
+    string strStamped;
+
+    if (!fLogTimestamps)
+        return str;
+
+    if (*fStartedNewLine) {
+        int64_t nTimeMicros = GetLogTimeMicros();
+        strStamped = DateTimeStrFormat("%Y-%m-%d %H:%M:%S", nTimeMicros/1000000);
+        if (fLogTimeMicros)
+            strStamped += strprintf(".%06d", nTimeMicros%1000000);
+        strStamped += ' ' + str;
+    } else
+        strStamped = str;
+
+    if (!str.empty() && str[str.size()-1] == '\n')
+        *fStartedNewLine = true;
+    else
+        *fStartedNewLine = false;
+
+    return strStamped;
+}
+
 int LogPrintStr(const std::string &str)
 {
     int ret = 0; // Returns total number of characters written
+    static bool fStartedNewLine = true;
+
+    string strTimestamped = LogTimestampStr(str, &fStartedNewLine);
+
     if (fPrintToConsole)
     {
         // print to console
-        ret = fwrite(str.data(), 1, str.size(), stdout);
+        ret = fwrite(strTimestamped.data(), 1, strTimestamped.size(), stdout);
         fflush(stdout);
     }
-    else if (fPrintToDebugLog && AreBaseParamsConfigured())
+    else if (fPrintToDebugLog)
     {
-        static bool fStartedNewLine = true;
         boost::call_once(&DebugPrintInit, debugPrintInitFlag);
-
-        if (fileout == NULL)
-            return ret;
-
         boost::mutex::scoped_lock scoped_lock(*mutexDebugLog);
 
-        // reopen the log file, if requested
-        if (fReopenDebugLog) {
-            fReopenDebugLog = false;
-            boost::filesystem::path pathDebug = GetDataDir() / "debug.log";
-            if (freopen(pathDebug.string().c_str(),"a",fileout) != NULL)
-                setbuf(fileout, NULL); // unbuffered
+        // buffer if we haven't opened the log yet
+        if (fileout == NULL) {
+            assert(vMsgsBeforeOpenLog);
+            ret = strTimestamped.length();
+            vMsgsBeforeOpenLog->push_back(strTimestamped);
         }
-
-        // Debug print useful for profiling
-        if (fLogTimestamps && fStartedNewLine)
-            ret += fprintf(fileout, "%s ", DateTimeStrFormat("%Y-%m-%d %H:%M:%S", GetTime()).c_str());
-        if (!str.empty() && str[str.size()-1] == '\n')
-            fStartedNewLine = true;
         else
-            fStartedNewLine = false;
+        {
+            // reopen the log file, if requested
+            if (fReopenDebugLog) {
+                fReopenDebugLog = false;
+                boost::filesystem::path pathDebug = GetDataDir() / "debug.log";
+                if (freopen(pathDebug.string().c_str(),"a",fileout) != NULL)
+                    setbuf(fileout, NULL); // unbuffered
+            }
 
-        ret = fwrite(str.data(), 1, str.size(), fileout);
+            ret = FileWriteStr(strTimestamped, fileout);
+        }
     }
-
     return ret;
 }
 
-static void InterpretNegativeSetting(string name, map<string, string>& mapSettingsRet)
+/** Interpret string as boolean, for argument parsing */
+static bool InterpretBool(const std::string& strValue)
 {
-    // interpret -nofoo as -foo=0 (and -nofoo=0 as -foo=1) as long as -foo not set
-    if (name.find("-no") == 0)
+    if (strValue.empty())
+        return true;
+    return (atoi(strValue) != 0);
+}
+
+/** Turn -noX into -X=0 */
+static void InterpretNegativeSetting(std::string& strKey, std::string& strValue)
+{
+    if (strKey.length()>3 && strKey[0]=='-' && strKey[1]=='n' && strKey[2]=='o')
     {
-        std::string positive("-");
-        positive.append(name.begin()+3, name.end());
-        if (mapSettingsRet.count(positive) == 0)
-        {
-            bool value = !GetBoolArg(name, false);
-            mapSettingsRet[positive] = (value ? "1" : "0");
-        }
+        strKey = "-" + strKey.substr(3);
+        strValue = InterpretBool(strValue) ? "0" : "1";
     }
 }
 
@@ -308,16 +370,10 @@ void ParseParameters(int argc, const char* const argv[])
         // If both --foo and -foo are set, the last takes effect.
         if (str.length() > 1 && str[1] == '-')
             str = str.substr(1);
+        InterpretNegativeSetting(str, strValue);
 
         mapArgs[str] = strValue;
         mapMultiArgs[str].push_back(strValue);
-    }
-
-    // New 0.6 features:
-    BOOST_FOREACH(const PAIRTYPE(string,string)& entry, mapArgs)
-    {
-        // interpret -nofoo as -foo=0 (and -nofoo=0 as -foo=1) as long as -foo not set
-        InterpretNegativeSetting(entry.first, mapArgs);
     }
 }
 
@@ -338,11 +394,7 @@ int64_t GetArg(const std::string& strArg, int64_t nDefault)
 bool GetBoolArg(const std::string& strArg, bool fDefault)
 {
     if (mapArgs.count(strArg))
-    {
-        if (mapArgs[strArg].empty())
-            return true;
-        return (atoi(mapArgs[strArg]) != 0);
-    }
+        return InterpretBool(mapArgs[strArg]);
     return fDefault;
 }
 
@@ -383,7 +435,7 @@ static std::string FormatException(const std::exception* pex, const char* pszThr
     char pszModule[MAX_PATH] = "";
     GetModuleFileNameA(NULL, pszModule, sizeof(pszModule));
 #else
-    const char* pszModule = "Zcash";
+    const char* pszModule = "hda";
 #endif
     if (pex)
         return strprintf(
@@ -398,19 +450,18 @@ void PrintExceptionContinue(const std::exception* pex, const char* pszThread)
     std::string message = FormatException(pex, pszThread);
     LogPrintf("\n\n************************\n%s\n", message);
     fprintf(stderr, "\n\n************************\n%s\n", message.c_str());
-    strMiscWarning = message;
 }
 
 boost::filesystem::path GetDefaultDataDir()
 {
     namespace fs = boost::filesystem;
-    // Windows < Vista: C:\Documents and Settings\Username\Application Data\Zcash
-    // Windows >= Vista: C:\Users\Username\AppData\Roaming\Zcash
-    // Mac: ~/Library/Application Support/Zcash
-    // Unix: ~/.zcash
+    // Windows < Vista: C:\Documents and Settings\Username\Application Data\Hda
+    // Windows >= Vista: C:\Users\Username\AppData\Roaming\Hda
+    // Mac: ~/Library/Application Support/Hda
+    // Unix: ~/.hda
 #ifdef WIN32
     // Windows
-    return GetSpecialFolderPath(CSIDL_APPDATA) / "Zcash";
+    return GetSpecialFolderPath(CSIDL_APPDATA) / "hda";
 #else
     fs::path pathRet;
     char* pszHome = getenv("HOME");
@@ -420,12 +471,10 @@ boost::filesystem::path GetDefaultDataDir()
         pathRet = fs::path(pszHome);
 #ifdef MAC_OSX
     // Mac
-    pathRet /= "Library/Application Support";
-    TryCreateDirectory(pathRet);
-    return pathRet / "Zcash";
+    return pathRet / "Library/Application Support/Hda";
 #else
     // Unix
-    return pathRet / ".zcash";
+    return pathRet / ".hda";
 #endif
 #endif
 }
@@ -446,7 +495,7 @@ static boost::filesystem::path ZC_GetBaseParamsDir()
     // Unix: ~/.zcash-params
 #ifdef WIN32
     // Windows
-    return GetSpecialFolderPath(CSIDL_APPDATA) / "ZcashParams";
+    return GetSpecialFolderPath(CSIDL_APPDATA) / "HdaParams";
 #else
     fs::path pathRet;
     char* pszHome = getenv("HOME");
@@ -458,10 +507,10 @@ static boost::filesystem::path ZC_GetBaseParamsDir()
     // Mac
     pathRet /= "Library/Application Support";
     TryCreateDirectory(pathRet);
-    return pathRet / "ZcashParams";
+    return pathRet / "HdaParams";
 #else
     // Unix
-    return pathRet / ".zcash-params";
+    return pathRet / ".hda-params";
 #endif
 #endif
 }
@@ -522,7 +571,7 @@ void ClearDatadirCache()
 
 boost::filesystem::path GetConfigFile()
 {
-    boost::filesystem::path pathConfigFile(GetArg("-conf", "zcash.conf"));
+    boost::filesystem::path pathConfigFile(GetArg("-conf", BITCOIN_CONF_FILENAME));
     if (!pathConfigFile.is_complete())
         pathConfigFile = GetDataDir(false) / pathConfigFile;
 
@@ -534,22 +583,20 @@ void ReadConfigFile(map<string, string>& mapSettingsRet,
 {
     boost::filesystem::ifstream streamConfig(GetConfigFile());
     if (!streamConfig.good())
-        return; // No zcash.conf file is OK
+        return; // No hda.conf file is OK
 
     set<string> setOptions;
     setOptions.insert("*");
 
     for (boost::program_options::detail::config_file_iterator it(streamConfig, setOptions), end; it != end; ++it)
     {
-        // Don't overwrite existing settings so command line settings override zcash.conf
+        // Don't overwrite existing settings so command line settings override hda.conf
         string strKey = string("-") + it->string_key;
+        string strValue = it->value[0];
+        InterpretNegativeSetting(strKey, strValue);
         if (mapSettingsRet.count(strKey) == 0)
-        {
-            mapSettingsRet[strKey] = it->value[0];
-            // interpret nofoo=1 as foo=0 (and nofoo=0 as foo=1) as long as foo not set)
-            InterpretNegativeSetting(strKey, mapSettingsRet);
-        }
-        mapMultiSettingsRet[strKey].push_back(it->value[0]);
+            mapSettingsRet[strKey] = strValue;
+        mapMultiSettingsRet[strKey].push_back(strValue);
     }
     // If datadir is changed in .conf file:
     ClearDatadirCache();
@@ -558,7 +605,7 @@ void ReadConfigFile(map<string, string>& mapSettingsRet,
 #ifndef WIN32
 boost::filesystem::path GetPidFile()
 {
-    boost::filesystem::path pathPidFile(GetArg("-pid", "zcashd.pid"));
+    boost::filesystem::path pathPidFile(GetArg("-pid", BITCOIN_PID_FILENAME));
     if (!pathPidFile.is_complete()) pathPidFile = GetDataDir() / pathPidFile;
     return pathPidFile;
 }
@@ -739,29 +786,7 @@ boost::filesystem::path GetSpecialFolderPath(int nFolder, bool fCreate)
 }
 #endif
 
-boost::filesystem::path GetTempPath() {
-#if BOOST_FILESYSTEM_VERSION == 3
-    return boost::filesystem::temp_directory_path();
-#else
-    // TODO: remove when we don't support filesystem v2 anymore
-    boost::filesystem::path path;
-#ifdef WIN32
-    char pszPath[MAX_PATH] = "";
-
-    if (GetTempPathA(MAX_PATH, pszPath))
-        path = boost::filesystem::path(pszPath);
-#else
-    path = boost::filesystem::path("/tmp");
-#endif
-    if (path.empty() || !boost::filesystem::is_directory(path)) {
-        LogPrintf("GetTempPath(): failed to find temp path\n");
-        return boost::filesystem::path("");
-    }
-    return path;
-#endif
-}
-
-void runCommand(std::string strCommand)
+void runCommand(const std::string& strCommand)
 {
     int nErr = ::system(strCommand.c_str());
     if (nErr)
@@ -803,15 +828,34 @@ void SetupEnvironment()
     boost::filesystem::path::imbue(loc);
 }
 
-void SetThreadPriority(int nPriority)
+bool SetupNetworking()
 {
 #ifdef WIN32
-    SetThreadPriority(GetCurrentThread(), nPriority);
-#else // WIN32
-#ifdef PRIO_THREAD
-    setpriority(PRIO_THREAD, 0, nPriority);
-#else // PRIO_THREAD
-    setpriority(PRIO_PROCESS, 0, nPriority);
-#endif // PRIO_THREAD
-#endif // WIN32
+    // Initialize Windows Sockets
+    WSADATA wsadata;
+    int ret = WSAStartup(MAKEWORD(2,2), &wsadata);
+    if (ret != NO_ERROR || LOBYTE(wsadata.wVersion ) != 2 || HIBYTE(wsadata.wVersion) != 2)
+        return false;
+#endif
+    return true;
+}
+
+int GetNumCores()
+{
+#if BOOST_VERSION >= 105600
+    return boost::thread::physical_concurrency();
+#else // Must fall back to hardware_concurrency, which unfortunately counts virtual cores
+    return boost::thread::hardware_concurrency();
+#endif
+}
+
+std::string CopyrightHolders(const std::string& strPrefix)
+{
+    std::string strCopyrightHolders = strPrefix + strprintf(_(COPYRIGHT_HOLDERS), _(COPYRIGHT_HOLDERS_SUBSTITUTION));
+
+    // Check for untranslated substitution to make sure Bitcoin Core copyright is not removed by accident
+    if (strprintf(COPYRIGHT_HOLDERS, COPYRIGHT_HOLDERS_SUBSTITUTION).find("Bitcoin Core") == std::string::npos) {
+        strCopyrightHolders += "\n" + strPrefix + "The Bitcoin Core developers";
+    }
+    return strCopyrightHolders;
 }

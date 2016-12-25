@@ -1,5 +1,5 @@
 // Copyright (c) 2009-2010 Satoshi Nakamoto
-// Copyright (c) 2009-2014 The Bitcoin Core developers
+// Copyright (c) 2009-2015 The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -21,10 +21,9 @@
 #include <utility>
 #include <vector>
 
+#include "prevector.h"
 #include <boost/array.hpp>
 #include <boost/optional.hpp>
-
-class CScript;
 
 static const unsigned int MAX_SIZE = 0x02000000;
 
@@ -53,26 +52,26 @@ inline T* NCONST_PTR(const T* val)
  * @note These functions avoid the undefined case of indexing into an empty
  * vector, as well as that of indexing after the end of the vector.
  */
-template <class T, class TAl>
-inline T* begin_ptr(std::vector<T,TAl>& v)
+template <typename V>
+inline typename V::value_type* begin_ptr(V& v)
 {
     return v.empty() ? NULL : &v[0];
 }
 /** Get begin pointer of vector (const version) */
-template <class T, class TAl>
-inline const T* begin_ptr(const std::vector<T,TAl>& v)
+template <typename V>
+inline const typename V::value_type* begin_ptr(const V& v)
 {
     return v.empty() ? NULL : &v[0];
 }
 /** Get end pointer of vector (non-const version) */
-template <class T, class TAl>
-inline T* end_ptr(std::vector<T,TAl>& v)
+template <typename V>
+inline typename V::value_type* end_ptr(V& v)
 {
     return v.empty() ? NULL : (&v[0] + v.size());
 }
 /** Get end pointer of vector (const version) */
-template <class T, class TAl>
-inline const T* end_ptr(const std::vector<T,TAl>& v)
+template <typename V>
+inline const typename V::value_type* end_ptr(const V& v)
 {
     return v.empty() ? NULL : (&v[0] + v.size());
 }
@@ -326,8 +325,8 @@ uint64_t ReadCompactSize(Stream& is)
  * 0:         [0x00]  256:        [0x81 0x00]
  * 1:         [0x01]  16383:      [0xFE 0x7F]
  * 127:       [0x7F]  16384:      [0xFF 0x00]
- * 128:  [0x80 0x00]  16511: [0x80 0xFF 0x7F]
- * 255:  [0x80 0x7F]  65535: [0x82 0xFD 0x7F]
+ * 128:  [0x80 0x00]  16511:      [0xFF 0x7F]
+ * 255:  [0x80 0x7F]  65535: [0x82 0xFE 0x7F]
  * 2^32:           [0x8E 0xFE 0xFE 0xFF 0x00]
  */
 
@@ -377,6 +376,7 @@ I ReadVarInt(Stream& is)
 
 #define FLATDATA(obj) REF(CFlatData((char*)&(obj), (char*)&(obj) + sizeof(obj)))
 #define VARINT(obj) REF(WrapVarInt(REF(obj)))
+#define COMPACTSIZE(obj) REF(CCompactSize(REF(obj)))
 #define LIMITED_STRING(obj,n) REF(LimitedString< n >(REF(obj)))
 
 /** 
@@ -391,6 +391,12 @@ public:
     CFlatData(void* pbeginIn, void* pendIn) : pbegin((char*)pbeginIn), pend((char*)pendIn) { }
     template <class T, class TAl>
     explicit CFlatData(std::vector<T,TAl> &v)
+    {
+        pbegin = (char*)begin_ptr(v);
+        pend = (char*)end_ptr(v);
+    }
+    template <unsigned int N, typename T, typename S, typename D>
+    explicit CFlatData(prevector<N, T, S, D> &v)
     {
         pbegin = (char*)begin_ptr(v);
         pend = (char*)end_ptr(v);
@@ -438,6 +444,28 @@ public:
     template<typename Stream>
     void Unserialize(Stream& s, int, int) {
         n = ReadVarInt<Stream,I>(s);
+    }
+};
+
+class CCompactSize
+{
+protected:
+    uint64_t &n;
+public:
+    CCompactSize(uint64_t& nIn) : n(nIn) { }
+
+    unsigned int GetSerializeSize(int, int) const {
+        return GetSizeOfCompactSize(n);
+    }
+
+    template<typename Stream>
+    void Serialize(Stream &s, int, int) const {
+        WriteCompactSize<Stream>(s, n);
+    }
+
+    template<typename Stream>
+    void Unserialize(Stream& s, int, int) {
+        n = ReadCompactSize<Stream>(s);
     }
 };
 
@@ -490,6 +518,20 @@ template<typename Stream, typename C> void Serialize(Stream& os, const std::basi
 template<typename Stream, typename C> void Unserialize(Stream& is, std::basic_string<C>& str, int, int=0);
 
 /**
+ * prevector
+ * prevectors of unsigned char are a special case and are intended to be serialized as a single opaque blob.
+ */
+template<unsigned int N, typename T> unsigned int GetSerializeSize_impl(const prevector<N, T>& v, int nType, int nVersion, const unsigned char&);
+template<unsigned int N, typename T, typename V> unsigned int GetSerializeSize_impl(const prevector<N, T>& v, int nType, int nVersion, const V&);
+template<unsigned int N, typename T> inline unsigned int GetSerializeSize(const prevector<N, T>& v, int nType, int nVersion);
+template<typename Stream, unsigned int N, typename T> void Serialize_impl(Stream& os, const prevector<N, T>& v, int nType, int nVersion, const unsigned char&);
+template<typename Stream, unsigned int N, typename T, typename V> void Serialize_impl(Stream& os, const prevector<N, T>& v, int nType, int nVersion, const V&);
+template<typename Stream, unsigned int N, typename T> inline void Serialize(Stream& os, const prevector<N, T>& v, int nType, int nVersion);
+template<typename Stream, unsigned int N, typename T> void Unserialize_impl(Stream& is, prevector<N, T>& v, int nType, int nVersion, const unsigned char&);
+template<typename Stream, unsigned int N, typename T, typename V> void Unserialize_impl(Stream& is, prevector<N, T>& v, int nType, int nVersion, const V&);
+template<typename Stream, unsigned int N, typename T> inline void Unserialize(Stream& is, prevector<N, T>& v, int nType, int nVersion);
+
+/**
  * vector
  * vectors of unsigned char are a special case and are intended to be serialized as a single opaque blob.
  */
@@ -504,14 +546,7 @@ template<typename Stream, typename T, typename A, typename V> void Unserialize_i
 template<typename Stream, typename T, typename A> inline void Unserialize(Stream& is, std::vector<T, A>& v, int nType, int nVersion);
 
 /**
- * others derived from vector
- */
-extern inline unsigned int GetSerializeSize(const CScript& v, int nType, int nVersion);
-template<typename Stream> void Serialize(Stream& os, const CScript& v, int nType, int nVersion);
-template<typename Stream> void Unserialize(Stream& is, CScript& v, int nType, int nVersion);
-
-/**
- * optional
+* optional
  */
 template<typename T> unsigned int GetSerializeSize(const boost::optional<T> &item, int nType, int nVersion);
 template<typename Stream, typename T> void Serialize(Stream& os, const boost::optional<T>& item, int nType, int nVersion);
@@ -524,6 +559,7 @@ template<typename T, std::size_t N> unsigned int GetSerializeSize(const boost::a
 template<typename Stream, typename T, std::size_t N> void Serialize(Stream& os, const boost::array<T, N>& item, int nType, int nVersion);
 template<typename Stream, typename T, std::size_t N> void Unserialize(Stream& is, boost::array<T, N>& item, int nType, int nVersion);
 
+/**
 /**
  * pair
  */
@@ -613,6 +649,170 @@ void Unserialize(Stream& is, std::basic_string<C>& str, int, int)
 
 
 /**
+ * prevector
+ */
+template<unsigned int N, typename T>
+unsigned int GetSerializeSize_impl(const prevector<N, T>& v, int nType, int nVersion, const unsigned char&)
+{
+    return (GetSizeOfCompactSize(v.size()) + v.size() * sizeof(T));
+}
+
+template<unsigned int N, typename T, typename V>
+unsigned int GetSerializeSize_impl(const prevector<N, T>& v, int nType, int nVersion, const V&)
+{
+    unsigned int nSize = GetSizeOfCompactSize(v.size());
+    for (typename prevector<N, T>::const_iterator vi = v.begin(); vi != v.end(); ++vi)
+        nSize += GetSerializeSize((*vi), nType, nVersion);
+    return nSize;
+}
+
+template<unsigned int N, typename T>
+inline unsigned int GetSerializeSize(const prevector<N, T>& v, int nType, int nVersion)
+{
+    return GetSerializeSize_impl(v, nType, nVersion, T());
+}
+
+
+template<typename Stream, unsigned int N, typename T>
+void Serialize_impl(Stream& os, const prevector<N, T>& v, int nType, int nVersion, const unsigned char&)
+{
+    WriteCompactSize(os, v.size());
+    if (!v.empty())
+        os.write((char*)&v[0], v.size() * sizeof(T));
+}
+
+template<typename Stream, unsigned int N, typename T, typename V>
+void Serialize_impl(Stream& os, const prevector<N, T>& v, int nType, int nVersion, const V&)
+{
+    WriteCompactSize(os, v.size());
+    for (typename prevector<N, T>::const_iterator vi = v.begin(); vi != v.end(); ++vi)
+        ::Serialize(os, (*vi), nType, nVersion);
+}
+
+template<typename Stream, unsigned int N, typename T>
+inline void Serialize(Stream& os, const prevector<N, T>& v, int nType, int nVersion)
+{
+    Serialize_impl(os, v, nType, nVersion, T());
+}
+
+
+template<typename Stream, unsigned int N, typename T>
+void Unserialize_impl(Stream& is, prevector<N, T>& v, int nType, int nVersion, const unsigned char&)
+{
+    // Limit size per read so bogus size value won't cause out of memory
+    v.clear();
+    unsigned int nSize = ReadCompactSize(is);
+    unsigned int i = 0;
+    while (i < nSize)
+    {
+        unsigned int blk = std::min(nSize - i, (unsigned int)(1 + 4999999 / sizeof(T)));
+        v.resize(i + blk);
+        is.read((char*)&v[i], blk * sizeof(T));
+        i += blk;
+    }
+}
+
+template<typename Stream, unsigned int N, typename T, typename V>
+void Unserialize_impl(Stream& is, prevector<N, T>& v, int nType, int nVersion, const V&)
+{
+    v.clear();
+    unsigned int nSize = ReadCompactSize(is);
+    unsigned int i = 0;
+    unsigned int nMid = 0;
+    while (nMid < nSize)
+    {
+        nMid += 5000000 / sizeof(T);
+        if (nMid > nSize)
+            nMid = nSize;
+        v.resize(nMid);
+        for (; i < nMid; i++)
+            Unserialize(is, v[i], nType, nVersion);
+    }
+}
+
+template<typename Stream, unsigned int N, typename T>
+inline void Unserialize(Stream& is, prevector<N, T>& v, int nType, int nVersion)
+{
+    Unserialize_impl(is, v, nType, nVersion, T());
+}
+
+/**
+ * optional
+ */
+template<typename T>
+unsigned int GetSerializeSize(const boost::optional<T> &item, int nType, int nVersion)
+{
+    if (item) {
+        return 1 + GetSerializeSize(*item, nType, nVersion);
+    } else {
+        return 1;
+    }
+}
+
+template<typename Stream, typename T>
+void Serialize(Stream& os, const boost::optional<T>& item, int nType, int nVersion)
+{
+    // If the value is there, put 0x01 and then serialize the value.
+    // If it's not, put 0x00.
+    if (item) {
+        unsigned char discriminant = 0x01;
+        Serialize(os, discriminant, nType, nVersion);
+        Serialize(os, *item, nType, nVersion);
+    } else {
+        unsigned char discriminant = 0x00;
+        Serialize(os, discriminant, nType, nVersion);
+    }
+}
+
+template<typename Stream, typename T>
+void Unserialize(Stream& is, boost::optional<T>& item, int nType, int nVersion)
+{
+    unsigned char discriminant = 0x00;
+    Unserialize(is, discriminant, nType, nVersion);
+
+    if (discriminant == 0x00) {
+        item = boost::none;
+    } else if (discriminant == 0x01) {
+        T object;
+        Unserialize(is, object, nType, nVersion);
+        item = object;
+    } else {
+        throw std::ios_base::failure("non-canonical optional discriminant");
+    }
+}
+
+
+
+/**
+ * array
+ */
+template<typename T, std::size_t N>
+unsigned int GetSerializeSize(const boost::array<T, N> &item, int nType, int nVersion)
+{
+    unsigned int size = 0;
+    for (size_t i = 0; i < N; i++) {
+        size += GetSerializeSize(item[0], nType, nVersion);
+    }
+    return size;
+}
+
+template<typename Stream, typename T, std::size_t N>
+void Serialize(Stream& os, const boost::array<T, N>& item, int nType, int nVersion)
+{
+    for (size_t i = 0; i < N; i++) {
+        Serialize(os, item[i], nType, nVersion);
+    }
+}
+
+template<typename Stream, typename T, std::size_t N>
+void Unserialize(Stream& is, boost::array<T, N>& item, int nType, int nVersion)
+{
+    for (size_t i = 0; i < N; i++) {
+        Unserialize(is, item[i], nType, nVersion);
+    }
+}
+
+/**
  * vector
  */
 template<typename T, typename A>
@@ -700,105 +900,6 @@ inline void Unserialize(Stream& is, std::vector<T, A>& v, int nType, int nVersio
     Unserialize_impl(is, v, nType, nVersion, T());
 }
 
-
-
-/**
- * others derived from vector
- */
-inline unsigned int GetSerializeSize(const CScript& v, int nType, int nVersion)
-{
-    return GetSerializeSize((const std::vector<unsigned char>&)v, nType, nVersion);
-}
-
-template<typename Stream>
-void Serialize(Stream& os, const CScript& v, int nType, int nVersion)
-{
-    Serialize(os, (const std::vector<unsigned char>&)v, nType, nVersion);
-}
-
-template<typename Stream>
-void Unserialize(Stream& is, CScript& v, int nType, int nVersion)
-{
-    Unserialize(is, (std::vector<unsigned char>&)v, nType, nVersion);
-}
-
-
-
-/**
- * optional
- */
-template<typename T>
-unsigned int GetSerializeSize(const boost::optional<T> &item, int nType, int nVersion)
-{
-    if (item) {
-        return 1 + GetSerializeSize(*item, nType, nVersion);
-    } else {
-        return 1;
-    }
-}
-
-template<typename Stream, typename T>
-void Serialize(Stream& os, const boost::optional<T>& item, int nType, int nVersion)
-{
-    // If the value is there, put 0x01 and then serialize the value.
-    // If it's not, put 0x00.
-    if (item) {
-        unsigned char discriminant = 0x01;
-        Serialize(os, discriminant, nType, nVersion);
-        Serialize(os, *item, nType, nVersion);
-    } else {
-        unsigned char discriminant = 0x00;
-        Serialize(os, discriminant, nType, nVersion);
-    }
-}
-
-template<typename Stream, typename T>
-void Unserialize(Stream& is, boost::optional<T>& item, int nType, int nVersion)
-{
-    unsigned char discriminant = 0x00;
-    Unserialize(is, discriminant, nType, nVersion);
-
-    if (discriminant == 0x00) {
-        item = boost::none;
-    } else if (discriminant == 0x01) {
-        T object;
-        Unserialize(is, object, nType, nVersion);
-        item = object;
-    } else {
-        throw std::ios_base::failure("non-canonical optional discriminant");
-    }
-}
-
-
-
-/**
- * array
- */
-template<typename T, std::size_t N>
-unsigned int GetSerializeSize(const boost::array<T, N> &item, int nType, int nVersion)
-{
-    unsigned int size = 0;
-    for (size_t i = 0; i < N; i++) {
-        size += GetSerializeSize(item[0], nType, nVersion);
-    }
-    return size;
-}
-
-template<typename Stream, typename T, std::size_t N>
-void Serialize(Stream& os, const boost::array<T, N>& item, int nType, int nVersion)
-{
-    for (size_t i = 0; i < N; i++) {
-        Serialize(os, item[i], nType, nVersion);
-    }
-}
-
-template<typename Stream, typename T, std::size_t N>
-void Unserialize(Stream& is, boost::array<T, N>& item, int nType, int nVersion)
-{
-    for (size_t i = 0; i < N; i++) {
-        Unserialize(is, item[i], nType, nVersion);
-    }
-}
 
 
 /**
@@ -896,8 +997,6 @@ void Unserialize(Stream& is, std::set<K, Pred, A>& m, int nType, int nVersion)
     }
 }
 
-
-
 /**
  * list
  */
@@ -931,7 +1030,6 @@ void Unserialize(Stream& is, std::list<T, A>& l, int nType, int nVersion)
         l.push_back(item);
     }
 }
-
 
 
 /**
